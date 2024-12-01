@@ -179,7 +179,6 @@ class ProcessServer:
   
   # For ACCEPT message
   def send_response(self, header, dest, op_num, content):
-  def send_response(self, header, dest, op_num, content):
     if self.op_num > op_num:
       return
     
