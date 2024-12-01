@@ -30,6 +30,7 @@ class ProcessServer:
     self.leader = -1 # keep track of the current leader in multi paxos
     self.num_nodes = 3 # maybe pass as an arg ?
     self.majority = (self.num_nodes // 2) + 1
+    self.collected_responses = {}  # context_id -> {server_id -> response}
     
     # Logic is once greater than majority, will send decide and then reset to 0, this assumes one accept at a time, which aligns with multi paxos assumptions
     self.accepted_num = 0
@@ -98,8 +99,21 @@ class ProcessServer:
             decide_thread = threading.Thread(target=self.decide, args=(msg, src,), daemon=True)
             decide_thread.start()
           elif header == "RESPONSE":
-            resp = message["message"]
-            print("Received from server {src} message {resp}") # maybe add a print lock
+            # Store response from other server
+            context_id = message["context_id"]
+            server_id = message["ballot_number"][1]
+            response = message["message"]
+            
+            # Initialize dict for context if needed
+            if context_id not in self.collected_responses:
+                self.collected_responses[context_id] = {}
+            
+            # Store response
+            self.collected_responses[context_id][server_id] = response
+            
+            # Print received response
+            print(f"\nReceived from server {server_id} for context {context_id}:")
+            print(f"Response: {response}\n")
           else:
             logging.warning(f"ProcessServer received unknown message: {message}")
         else:
@@ -126,7 +140,7 @@ class ProcessServer:
   
   
   def send_message(self, header, content):
-    for node in range(1, self.num_nodes+1):
+    for node in range(self.num_nodes):
         if node == self.id:
           continue
         
@@ -182,7 +196,7 @@ class ProcessServer:
   
   # For ACCEPT message
   def send_response(self, header, dest, op_num, content):
-    if self.op_num > op_num:
+    if self.op > op_num:
       return
     
     message = {
@@ -196,28 +210,60 @@ class ProcessServer:
     self.socket.sendall(json.dumps(message).encode('utf-8'))
   
   def decide(self, message, src):
-    # parse the command and forward to the correct function
-    # start function in seperate thread
-    tokens = message.strip().split(" ")
+    """Handle consensus decisions and coordinate responses."""
+    tokens = message.strip().split()
+    if not tokens:
+        return
+        
     command = tokens[0]
-    response = ""
     
     if command == "create" and len(tokens) == 2 and tokens[1].isdigit():
-      context_id = tokens[1]
-      response = self.service.create_context(context_id)
+        context_id = tokens[1]
+        success = self.service.create_context(context_id)
+        if success:
+            print(f"NEW CONTEXT {context_id}")
+            
     elif command == "query" and len(tokens) == 3 and tokens[1].isdigit():
-      context_id = tokens[1]
-      query_string = tokens[2]
-      response = self.service.add_query(context_id, query_string)
-      # start query thread
+        context_id = tokens[1]
+        query_string = tokens[2]
+        
+        # Add query to local context
+        if self.service.add_query_to_context(context_id, query_string):
+            print(f"NEW QUERY on {context_id} with {query_string}")
+            
+            # Generate this server's response
+            response = self.service.generate_response(context_id)
+            if response:
+                # Send response back to source server
+                message = {
+                    "header": "RESPONSE",
+                    "message": response,
+                    "ballot_number": (self.op, self.id, self.seq_num),
+                    "dest": src,
+                    "context_id": context_id  # Include context_id in response
+                }
+                self.socket.sendall(json.dumps(message).encode('utf-8'))
+                
     elif command == "choose" and len(tokens) == 3 and tokens[1].isdigit() and tokens[2].isdigit():
-      context_id = tokens[1]
-      response_number = tokens[2]
-      response = self.service.save_answer(context_id, response_number) # need to change logic in the llm_service
-    else:
-      response = "Could not decide"
-    
-    self.send_response(header="RESPONSE", dest=src, op_num=float("inf"), message=response)
+        context_id = tokens[1]
+        server_id = int(tokens[2])
+        if server_id in self.collected_responses.get(context_id, {}):
+            chosen_answer = self.collected_responses[context_id][server_id]
+            if self.service.save_answer(context_id, chosen_answer):
+                print(f"CHOSEN ANSWER on {context_id} with {chosen_answer}")
+                self.collected_responses.pop(context_id, None)
+                
+    elif command == "view" and len(tokens) == 2 and tokens[1].isdigit():
+        context_id = tokens[1]
+        context = self.service.get_context(context_id)
+        if context:
+            print(f"\nContext {context_id}:\n{context}\n")
+            
+    elif command == "viewall":
+        contexts = self.service.get_all_contexts()
+        print("\nAll Contexts:")
+        for cid, context in contexts.items():
+            print(f"\nContext {cid}:\n{context}")
 
   def shutdown(self):
     """
