@@ -3,6 +3,7 @@ import threading
 import time
 import logging
 import sys
+import json
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -91,34 +92,31 @@ class NetworkServer:
   
   # demo function, logic needs to be updated to handle multi-paxos protocol
   def forward_message(self, p_socket, message):
-
     logging.debug(f"Forwarding message: {message}")
 
     try:
-      n_message = message.strip().split(" ")
+        json_message = json.loads(message)
 
-      # more advanced parsing needed for actual function
-      if len(n_message) != 3:
-        print("Invalid message received")
-        return 
+        src_id = json_message["ballot_number"][1]
+        dest_id = json_message["dest"]
+        
+        if dest_id not in self.connections:
+            logging.error(f"Could not connect to server: {dest_id}")
+            return 
 
-      src_id = int(n_message[0])
-      dest_id = int(n_message[1])
-      content = n_message[2]
+        dest_sock = self.connections[dest_id]
 
-      if dest_id not in self.connections:
-        logging.error(f"Could not connect to server: {dest_id}")
-        return 
-
-      dest_sock = self.connections[dest_id]
-      if self.connection_map[src_id][dest_id]:
-        time.sleep(3)
-        dest_sock.sendall(content.encode())
-        logging.info(f"Sent message: {content} from server {src_id} to server {dest_id}")
-      else:
-        logging.error(f"Failed to send message '{content}' from {src_id} to {dest_id}")
+        if self.connection_map[src_id][dest_id]:
+            time.sleep(3)
+            dest_sock.sendall(message.encode())
+            logging.info(f"Sent message: {json_message['header']} from server {src_id} to server {dest_id}")
+        else:
+            logging.error(f"Failed to send message from {src_id} to {dest_id}")
+            
+    except json.JSONDecodeError:
+        logging.error("Invalid JSON message received")
     except Exception as e:
-      logging.exception(f"Error sending reply: {e}")
+        logging.exception(f"Error sending reply: {e}")
 
   def connect_to_node(self, server_id, port):
     try:

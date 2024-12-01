@@ -1,3 +1,4 @@
+import threading
 import google.generativeai as genai
 from typing import Dict, Optional
 
@@ -7,39 +8,45 @@ class LLMService:
         self.model = genai.GenerativeModel("gemini-1.5-flash")
 
         self.contexts: Dict[str, str] = {}
+        self.contexts.lock = threading.Lock()
         
     def create_context(self, context_id: str) -> bool:
         """Create a new empty context."""
-        if context_id in self.contexts:
-            return False
-        self.contexts[context_id] = ""
-        return True
+        with self.contexts.lock:
+            if context_id in self.contexts:
+                return False
+            self.contexts[context_id] = ""
+            return True
         
     def add_query(self, context_id: str, query: str) -> Optional[str]:
         """Add a query to a context and get LLM response."""
-        if context_id not in self.contexts:
-            return None
-            
-        if self.contexts[context_id]:
-            self.contexts[context_id] += "\n"
-        self.contexts[context_id] += f"Query: {query}\n"
+        with self.contexts.lock:
+            if context_id not in self.contexts:
+                return None
+                
+            if self.contexts[context_id]:
+                self.contexts[context_id] += "\n"
+            self.contexts[context_id] += f"Query: {query}\n"
 
-        prompt = self.contexts[context_id] + "Answer: "
+            prompt = self.contexts[context_id] + "Answer: "
         response = self.model.generate_content(prompt)
         return response.text
         
     def save_answer(self, context_id: str, answer: str) -> bool:
         """Save a selected answer to the context."""
-        if context_id not in self.contexts:
-            return False
-            
-        self.contexts[context_id] += f"Answer: {answer}\n"
-        return True
+        with self.contexts.lock:
+            if context_id not in self.contexts:
+                return False
+                
+            self.contexts[context_id] += f"Answer: {answer}\n"
+            return True
         
     def get_context(self, context_id: str) -> Optional[str]:
         """Retrieve a specific context."""
-        return self.contexts.get(context_id)
+        with self.contexts.lock:
+            return self.contexts.get(context_id)
         
     def get_all_contexts(self) -> Dict[str, str]:
         """Retrieve all contexts."""
-        return self.contexts.copy()
+        with self.contexts.lock:
+            return self.contexts.copy()

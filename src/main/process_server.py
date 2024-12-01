@@ -5,6 +5,8 @@ import logging
 import collections
 import json
 import math
+import os
+from llm_service import LLMService
 
 logging.basicConfig(
   level=logging.DEBUG,
@@ -27,14 +29,18 @@ class ProcessServer:
     self.leader = -1 # keep track of the current leader in multi paxos
     self.num_nodes = 3 # maybe pass as an arg ?
     self.majority = (self.num_nodes // 2) + 1
-    self.contexts = {} # replicated dictionary
-    self.contexts_lock = threading.Lock()
     
     # Logic is once greater than majority, will send decide and then reset to 0, this assumes one accept at a time, which aligns with multi paxos assumptions
     self.accepted_num = 0
     # self.accepted_lock = threading.Lock()
     self.accepted_condition = threading.Condition()
     self.pending_operations = collections.deque()
+
+    # Initialize the LLM service
+    api_key = os.getenv('GEMINI_API_KEY')
+    if not api_key:
+        raise EnvironmentError("Please set GEMINI_API_KEY environment variable")
+    self.service = LLMService(api_key)
     
   def connect(self):
     """
@@ -174,23 +180,6 @@ class ProcessServer:
 
   def broadcast_accept(self):
     pass
-    
-
-  def send_message(self, dest_id, content):
-    """
-    Send a message to a specific destination server via the NetworkServer.
-    Message format: "dest_id:content"
-    """
-    if not self.socket:
-      logging.error("ProcessServer is not connected to any NetworkServer.")
-      return
-
-    message = f"{self.id} {dest_id} {content}"
-    try:
-      self.socket.sendall(message.encode())
-      logging.info(f"ProcessServer sent message: {message}")
-    except Exception as e:
-      logging.exception(f"ProcessServer failed to send message: {e}")
 
   def shutdown(self):
     """
