@@ -83,6 +83,8 @@ class ProcessServer:
             op_num = message["ballot_number"][0]
             content = message["message"]
             response_thread = threading.Thread(target=self.send_response, args=("ACCEPTED", src, op_num, content), daemon=True)
+            content = message["message"]
+            response_thread = threading.Thread(target=self.send_response, args=("ACCEPTED", src, op_num, content), daemon=True)
             response_thread.start()
           elif header == "ACCEPTED":
             logging.info(f"ProcessServer received message: {header} from {src}")
@@ -96,6 +98,9 @@ class ProcessServer:
             msg = message["message"]
             decide_thread = threading.Thread(target=self.decide, args=(msg, src,), daemon=True)
             decide_thread.start()
+          elif header == "RESPONSE":
+            resp = message["message"]
+            print("Received from server {src} message {resp}") # maybe add a print lock
           elif header == "RESPONSE":
             resp = message["message"]
             print("Received from server {src} message {resp}") # maybe add a print lock
@@ -149,10 +154,15 @@ class ProcessServer:
       
     # Send ACCEPT message:
     self.send_message(header="ACCEPT", message=command)
+    self.send_message(header="ACCEPT", message=command)
     self.accepted_condition.wait_for(lambda: self.accepted_num >= self.majority)
     self.accepted_num = 0
   
     # Send DECIDE message:
+    self.send_message(header="DECIDE", message=command)
+    
+    
+
     self.send_message(header="DECIDE", message=command)
     
     
@@ -168,6 +178,7 @@ class ProcessServer:
     # - Once local variable is a majority, then decide 
   
   # For ACCEPT message
+  def send_response(self, header, dest, op_num, content):
   def send_response(self, header, dest, op_num, content):
     if self.op_num > op_num:
       return
@@ -253,9 +264,15 @@ class ProcessServer:
           message = f"{command} {context_id}"
           self.reach_consensus(message)
           
+          message = f"{command} {context_id}"
+          self.reach_consensus(message)
+          
           # start create context thread
         elif command == "query" and len(tokens) == 3 and tokens[1].isdigit():
           context_id = tokens[1]
+          query_string = tokens[2]
+          message = f"{command} {context_id} {query_string}"
+          self.reach_consensus(message)
           query_string = tokens[2]
           message = f"{command} {context_id} {query_string}"
           self.reach_consensus(message)
@@ -265,10 +282,15 @@ class ProcessServer:
           response_number = tokens[2]
           message = f"{command} {context_id} {response_number}"
           self.reach_consensus(message)
+          response_number = tokens[2]
+          message = f"{command} {context_id} {response_number}"
+          self.reach_consensus(message)
         elif command == "view" and len(tokens) == 2 and tokens[1].isdigit():
+          # TODO: start view thread and create view function
           # TODO: start view thread and create view function
           pass
         elif command == "viewall":
+          # TODO: start viewall thread and create viewall function
           # TODO: start viewall thread and create viewall function
           pass
           # start view all thread
