@@ -42,6 +42,9 @@ class ProcessServer:
         raise EnvironmentError("Please set GEMINI_API_KEY environment variable")
     self.service = LLMService(api_key)
     
+    self.geminiService = LLMService()
+    logging.log(f"Successfully initialized processer server {self.id}")
+    
   def connect(self):
     """
     Establish a connection to the NetworkServer.
@@ -78,7 +81,8 @@ class ProcessServer:
           elif header == "ACCEPT":
             logging.info(f"ProcessServer received message: {header} from {src}")
             op_num = message["ballot_number"][0]
-            response_thread = threading.Thread(target=self.send_response, args=("ACCEPTED", src, op_num,), daemon=True)
+            content = message["message"]
+            response_thread = threading.Thread(target=self.send_response, args=("ACCEPTED", src, op_num, content), daemon=True)
             response_thread.start()
           elif header == "ACCEPTED":
             logging.info(f"ProcessServer received message: {header} from {src}")
@@ -90,8 +94,11 @@ class ProcessServer:
             # create new decide function
             logging.info(f"ProcessServer received message: {header} from {src}")
             msg = message["message"]
-            decide_thread = threading.Thread(target=self.send_message, args=("DECIDE", msg,), daemon=True)
+            decide_thread = threading.Thread(target=self.decide, args=(msg, src,), daemon=True)
             decide_thread.start()
+          elif header == "RESPONSE":
+            resp = message["message"]
+            print("Received from server {src} message {resp}") # maybe add a print lock
           else:
             logging.warning(f"ProcessServer received unknown message: {message}")
         else:
@@ -132,8 +139,7 @@ class ProcessServer:
         # Maybe consider having a send lock if this becomes a problem
         self.socket.sendall(json.dumps(message).encode('utf-8'))
     
-  def reach_consensus(self, context_id):
-    msg = f"create_content: {context_id}"
+  def reach_consensus(self, command):
     # Send PROPOSE message if not leader:
     # if self.leader != self.id:
     #   self.send_message(header="PROPOSE", message=msg)
@@ -142,17 +148,15 @@ class ProcessServer:
     #   self.leader = self.id
       
     # Send ACCEPT message:
-    self.send_message(header="ACCEPT", message=msg)
+    self.send_message(header="ACCEPT", message=command)
     self.accepted_condition.wait_for(lambda: self.accepted_num >= self.majority)
     self.accepted_num = 0
   
     # Send DECIDE message:
-    self.send_message(header="DECIDE", message=msg)
+    self.send_message(header="DECIDE", message=command)
     
     
-      
-      
-      
+
     # initialize context_id to an empty string
     # Send to other servers through multi paxos
     # - If not leader, send proposal
@@ -164,19 +168,44 @@ class ProcessServer:
     # - Once local variable is a majority, then decide 
   
   # For ACCEPT message
-  def send_response(self, header, dest, op_num):
+  def send_response(self, header, dest, op_num, content):
     if self.op_num > op_num:
       return
     
     message = {
       "header" : header,
-      "message" : message,
+      "message" : content,
       "ballot_number" : (self.op, self.id, self.seq_num),
       "dest" : dest
     }
     
     # Maybe consider having a send lock if this becomes a problem
     self.socket.sendall(json.dumps(message).encode('utf-8'))
+  
+  def decide(self, message, src):
+    # parse the command and forward to the correct function
+    # start function in seperate thread
+    tokens = message.strip().split(" ")
+    command = tokens[0]
+    response = ""
+    
+    if command == "create" and len(tokens) == 2 and tokens[1].isdigit():
+      context_id = tokens[1]
+      response = self.geminiService.create_context(context_id)
+    elif command == "query" and len(tokens) == 3 and tokens[1].isdigit():
+      context_id = tokens[1]
+      query_string = tokens[2]
+      response = self.geminiService.add_query(context_id, query_string)
+      # start query thread
+    elif command == "choose" and len(tokens) == 3 and tokens[1].isdigit() and tokens[2].isdigit():
+      context_id = tokens[1]
+      response_number = tokens[2]
+      response = self.geminiService.save_answer(context_id, response_number) # need to change logic in the llm_service
+    else:
+      response = "Could not decide"
+    
+    self.send_response(header="RESPONSE", dest=src, op_num=float("inf"), message=response)
+    
 
   def broadcast_accept(self):
     pass
@@ -221,17 +250,26 @@ class ProcessServer:
         
         if command == "create" and len(tokens) == 2 and tokens[1].isdigit():
           context_id = tokens[1]
+          message = f"{command} {context_id}"
+          self.reach_consensus(message)
+          
           # start create context thread
         elif command == "query" and len(tokens) == 3 and tokens[1].isdigit():
           context_id = tokens[1]
+          query_string = tokens[2]
+          message = f"{command} {context_id} {query_string}"
+          self.reach_consensus(message)
           # start query thread
         elif command == "choose" and len(tokens) == 3 and tokens[1].isdigit() and tokens[2].isdigit():
           context_id = tokens[1]
-          repsonse_number = tokens[2]
+          response_number = tokens[2]
+          message = f"{command} {context_id} {response_number}"
+          self.reach_consensus(message)
         elif command == "view" and len(tokens) == 2 and tokens[1].isdigit():
-          # start view context thread
+          # TODO: start view thread and create view function
           pass
         elif command == "viewall":
+          # TODO: start viewall thread and create viewall function
           pass
           # start view all thread
         elif command == "exit":
