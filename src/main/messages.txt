@@ -1,0 +1,22 @@
+
+# ----- Multi Paxos Messages -----
+
+PREPARE, seq_num, src_pid, op_num, dest_pid
+# Sent by: Proposer
+# Purpose: To ask acceptors to promise not to accept proposals with lower ballot numbers.
+
+PROMISE, seq_num, src_pid, op_num, dest_pid, acceptNum, acceptVal
+# Sent by: Acceptor
+# Purpose: To promise not to accept lower ballot numbers and share the previously accepted value (if any).
+
+PROPOSE, seq_num, src_pid, op_num, dest_pid, value
+# Sent by: Proposer
+# Purpose: To propose a value for consensus.
+
+ACCEPT, seq_num, src_pid, op_num, dest_pid, value
+# Sent by: Acceptor
+# Purpose: To confirm acceptance of the proposal with the given value.
+
+DECIDE, seq_num, src_pid, op_num, dest_pid, value
+# Sent by: Proposer or Acceptor
+# Purpose: To notify learners about the final chosen value.
