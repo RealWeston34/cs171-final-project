@@ -4,6 +4,7 @@ import time
 import logging
 import sys
 import json
+import struct
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -41,6 +42,17 @@ class NetworkServer:
     port = addr[1]
     return port - self.server_port - 1 
 
+  # Ai GENERATED
+  def recvall(self, sock, n):
+    """Helper function to read exactly n bytes."""
+    data = bytearray()
+    while len(data) < n:
+        packet = sock.recv(n - len(data))
+        if not packet:
+            return None  # Connection closed or error
+        data.extend(packet)
+    return bytes(data)
+
   def start_server(self):
     logging.info("Starting server...")
     self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -74,49 +86,74 @@ class NetworkServer:
         if self.is_running:
           logging.exception(f"Error accepting connections: {e}")
   
+  # def handle_process(self, p_socket):
+  #   logging.debug("Handling the process in a new thread")
+  #   try:
+  #     while self.is_running:
+  #       data = p_socket.recv(1024)
+  #       if data:
+  #         message = data.decode("utf-8")
+  #         forward_thread = threading.Thread(target=self.forward_message, args=(p_socket, message,))
+  #         forward_thread.start()
+  #       else:
+  #         break
+  #   except Exception as e:
+  #     logging.exception(f"Error handling client: {e}")
+  #   finally:
+  #     p_socket.close()
+      
   def handle_process(self, p_socket):
     logging.debug("Handling the process in a new thread")
     try:
       while self.is_running:
-        data = p_socket.recv(1024)
-        if data:
-          message = data.decode().strip()
-          forward_thread = threading.Thread(target=self.forward_message, args=(p_socket, message,))
-          forward_thread.start()
-        else:
-          break
+        # Read exactly 4 bytes for the length prefix
+        raw_length = self.recvall(p_socket, 4)
+        if not raw_length:
+          break  # Connection closed or error
+
+        # Unpack the length (big-endian unsigned integer)
+        message_length = struct.unpack('>I', raw_length)[0]
+
+        # Read the message data based on the length
+        message_bytes = self.recvall(p_socket, message_length)
+        if not message_bytes:
+          break  # Connection closed or error
+
+        # Decode and deserialize the JSON message
+        message_str = message_bytes.decode('utf-8')
+        message = json.loads(message_str)
+        forward_thread = threading.Thread(target=self.forward_message, args=(p_socket, message,))
+        forward_thread.start()
     except Exception as e:
       logging.exception(f"Error handling client: {e}")
     finally:
       p_socket.close()
-  
+    
   # demo function, logic needs to be updated to handle multi-paxos protocol
-  def forward_message(self, p_socket, message):
-    logging.debug(f"Forwarding message: {message}")
-
+  def forward_message(self, p_socket, json_message):
     try:
-        json_message = json.loads(message)
+      logging.debug(f"Forwarding message: {json_message}")
+      src_id = json_message["ballot_number"][1]
+      dest_id = json_message["dest"]
+      
+      if dest_id not in self.connections:
+        logging.error(f"Could not connect to server: {dest_id}")
+        return 
 
-        src_id = json_message["ballot_number"][1]
-        dest_id = json_message["dest"]
-        
-        if dest_id not in self.connections:
-            logging.error(f"Could not connect to server: {dest_id}")
-            return 
+      dest_sock = self.connections[dest_id]
 
-        dest_sock = self.connections[dest_id]
-
-        if self.connection_map[src_id][dest_id]:
-            time.sleep(3)
-            dest_sock.sendall(message.encode())
-            logging.info(f"Sent message: {json_message['header']} from server {src_id} to server {dest_id}")
-        else:
-            logging.error(f"Failed to send message from {src_id} to {dest_id}")
-            
+      if self.connection_map[src_id][dest_id]:
+        time.sleep(3)
+        dest_msg = json.dumps(json_message)
+        dest_sock.sendall(dest_msg.encode('utf-8'))
+        logging.info(f"Sent message: {json_message['header']} from server {src_id} to server {dest_id}")
+      else:
+        logging.error(f"Failed to send message from {src_id} to {dest_id}")
+          
     except json.JSONDecodeError:
-        logging.error("Invalid JSON message received")
+      logging.error("Invalid JSON message received")
     except Exception as e:
-        logging.exception(f"Error sending reply: {e}")
+      logging.exception(f"Error sending reply: {e}")
 
   def connect_to_node(self, server_id, port):
     try:

@@ -15,12 +15,12 @@ network_server:
 
 # Run command:
 # make process_server ID=1
+server0:
+	python3 -u process_server.py 0 localhost $(PORT)
+
 server1:
 	python3 -u process_server.py 1 localhost $(PORT)
 
 server2:
 	python3 -u process_server.py 2 localhost $(PORT)
-
-server3:
-	python3 -u process_server.py 3 localhost $(PORT)
 
