@@ -12,7 +12,6 @@ class LLMService:
     def create_context(self, context_id: str) -> bool:
         """Create a new empty context."""
         with self.contexts_lock:
-        with self.contexts_lock:
             if context_id in self.contexts:
                 return False
             self.contexts[context_id] = ""

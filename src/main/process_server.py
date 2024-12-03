@@ -139,7 +139,7 @@ class ProcessServer:
   # In the 'handle_operation' thead, it will bascially do operations using multi paxos.
   
   
-  def send_message(self, header, content):
+  def send_message(self, header, content, context_id=-1):
     for node in range(self.num_nodes):
       if node == self.id:
         continue
@@ -148,7 +148,8 @@ class ProcessServer:
         "header" : header,
         "message" : content,
         "ballot_number" : (self.op, self.id, self.seq_num),
-        "dest" : node
+        "dest" : node,
+        "context_id" : context_id
       }
       
       # Maybe consider having a send lock if this becomes a problem
@@ -196,7 +197,7 @@ class ProcessServer:
     # - Once local variable is a majority, then decide 
   
   # For ACCEPT message
-  def send_response(self, header, dest, op_num, content):
+  def send_response(self, header, dest, op_num, content, context_id=-1):
     if self.op > op_num:
       logging.debug("I DONT ACCEPT!!!!!!!!!!!!")
       return
@@ -205,7 +206,8 @@ class ProcessServer:
       "header" : header,
       "message" : content,
       "ballot_number" : (self.op, self.id, self.seq_num),
-      "dest" : dest
+      "dest" : dest,
+      "context_id" : context_id
     }
   
     # Serialize the message to JSON and encode it to bytes
@@ -223,61 +225,48 @@ class ProcessServer:
     with self.send_lock:
       self.socket.sendall(length_prefix + message_bytes)
   
-  def decide(self, message, src):
+  def decide(self, message, src, is_leader=False):
     """Handle consensus decisions and coordinate responses."""
     tokens = message.strip().split()
     if not tokens:
-        return
+      return
         
     command = tokens[0]
+    response = ""
+    context_id = -1
     
     if command == "create" and len(tokens) == 2 and tokens[1].isdigit():
-        context_id = tokens[1]
-        success = self.service.create_context(context_id)
-        if success:
-            print(f"NEW CONTEXT {context_id}")
+      context_id = tokens[1]
+      success = self.service.create_context(context_id)
+      if success:
+        print(f"NEW CONTEXT {context_id}")
             
     elif command == "query" and len(tokens) == 3 and tokens[1].isdigit():
-        context_id = tokens[1]
-        query_string = tokens[2]
-        
-        # Add query to local context
-        if self.service.add_query_to_context(context_id, query_string):
-            print(f"NEW QUERY on {context_id} with {query_string}")
-            
-            # Generate this server's response
-            response = self.service.generate_response(context_id)
-            if response:
-                # Send response back to source server
-                message = {
-                    "header": "RESPONSE",
-                    "message": response,
-                    "ballot_number": (self.op, self.id, self.seq_num),
-                    "dest": src,
-                    "context_id": context_id  # Include context_id in response
-                }
-                self.socket.sendall(json.dumps(message).encode('utf-8'))
+      context_id = tokens[1]
+      query_string = tokens[2]
+      
+      # Add query to local context
+      if self.service.add_query_to_context(context_id, query_string):
+        print(f"NEW QUERY on {context_id} with {query_string}")
+        response += self.service.generate_response(context_id)
+      else:
+        logging.error("Failed to decide on QUERY function")
+    
                 
     elif command == "choose" and len(tokens) == 3 and tokens[1].isdigit() and tokens[2].isdigit():
-        context_id = tokens[1]
-        server_id = int(tokens[2])
-        if server_id in self.collected_responses.get(context_id, {}):
-            chosen_answer = self.collected_responses[context_id][server_id]
-            if self.service.save_answer(context_id, chosen_answer):
-                print(f"CHOSEN ANSWER on {context_id} with {chosen_answer}")
-                self.collected_responses.pop(context_id, None)
-                
-    elif command == "view" and len(tokens) == 2 and tokens[1].isdigit():
-        context_id = tokens[1]
-        context = self.service.get_context(context_id)
-        if context:
-            print(f"\nContext {context_id}:\n{context}\n")
-            
-    elif command == "viewall":
-        contexts = self.service.get_all_contexts()
-        print("\nAll Contexts:")
-        for cid, context in contexts.items():
-            print(f"\nContext {cid}:\n{context}")
+      context_id = tokens[1]
+      server_id = int(tokens[2])
+      if server_id in self.collected_responses.get(context_id, {}):
+        chosen_answer = self.collected_responses[context_id][server_id]
+        if self.service.save_answer(context_id, chosen_answer):
+          print(f"CHOSEN ANSWER on {context_id} with {chosen_answer}")
+          self.collected_responses.pop(context_id, None)    
+    else:
+      response = "Could not decide!"
+    
+    if not is_leader and response:
+      self.send_response(header="RESPONSE", dest=src, op_num=float("inf"), content=response, context_id=context_id)
+      
 
   def shutdown(self):
     """
@@ -335,15 +324,15 @@ class ProcessServer:
           message = f"{command} {context_id} {response_number}"
           self.reach_consensus(message)
         elif command == "view" and len(tokens) == 2 and tokens[1].isdigit():
-          # TODO: start view thread and create view function
           context_id = tokens[1]
-          context_string = self.service.get_context(context_id)
-          print(context_string)
+          context = self.service.get_context(context_id)
+          if context:
+            print(f"\nContext {context_id}:\n{context}\n")       
         elif command == "viewall":
-          # TODO: start viewall thread and create viewall function
-          all_context_strings = self.service.get_all_contexts()
-          print(all_context_strings)
-          # start view all thread
+          contexts = self.service.get_all_contexts()
+          print("\nAll Contexts:")
+          for cid, context in contexts.items():
+            print(f"\nContext {cid}:\n{context}")
         elif command == "exit":
           logging.info("ProcessServer exiting upon user request.")
           self.shutdown()
