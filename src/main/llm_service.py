@@ -8,7 +8,7 @@ class LLMService:
         self.model = genai.GenerativeModel("gemini-1.5-flash")
 
         self.contexts: Dict[str, str] = {}
-        self.contexts.lock = threading.Lock()
+        self.contexts_lock = threading.Lock()
         
     def create_context(self, context_id: str) -> bool:
         """Create a new empty context."""

@@ -6,6 +6,7 @@ import collections
 import json
 import math
 import os
+import struct
 from llm_service import LLMService
 
 logging.basicConfig(
@@ -35,6 +36,7 @@ class ProcessServer:
     # self.accepted_lock = threading.Lock()
     self.accepted_condition = threading.Condition()
     self.pending_operations = collections.deque()
+    self.send_lock = threading.Lock()
 
     # Initialize the LLM service
     api_key = os.getenv('GEMINI_API_KEY')
@@ -42,7 +44,7 @@ class ProcessServer:
         raise EnvironmentError("Please set GEMINI_API_KEY environment variable")
     self.service = LLMService(api_key)
     
-    logging.log(f"Successfully initialized processer server {self.id}")
+    logging.info(f"Successfully initialized processer server {self.id}")
     
   def connect(self):
     """
@@ -123,20 +125,31 @@ class ProcessServer:
   # In the 'handle_operation' thead, it will bascially do operations using multi paxos.
   
   
-  def send_message(self, header, message):
-    for node in range(self.num_nodes):
+  def send_message(self, header, content):
+    for node in range(1, self.num_nodes+1):
         if node == self.id:
           continue
         
         message = {
           "header" : header,
-          "message" : message,
+          "message" : content,
           "ballot_number" : (self.op, self.id, self.seq_num),
           "dest" : node
         }
         
         # Maybe consider having a send lock if this becomes a problem
-        self.socket.sendall(json.dumps(message).encode('utf-8'))
+        # Serialize the message to JSON and encode it to bytes
+        message_bytes = json.dumps(message).encode('utf-8')
+
+        # Calculate the length of the message
+        message_length = len(message_bytes)
+
+        # Pack the length into 4 bytes using big-endian format
+        length_prefix = struct.pack('>I', message_length)
+
+        # Send the length prefix followed by the message bytes
+        with self.send_lock:
+          self.socket.sendall(length_prefix + message_bytes)
     
   def reach_consensus(self, command):
     # Send PROPOSE message if not leader:
@@ -147,12 +160,13 @@ class ProcessServer:
     #   self.leader = self.id
       
     # Send ACCEPT message:
-    self.send_message(header="ACCEPT", message=command)
-    self.accepted_condition.wait_for(lambda: self.accepted_num >= self.majority)
-    self.accepted_num = 0
+    self.send_message(header="ACCEPT", content=command)
+    with self.accepted_condition:
+      self.accepted_condition.wait_for(lambda: self.accepted_num >= self.majority)
+      self.accepted_num = 0
   
     # Send DECIDE message:
-    self.send_message(header="DECIDE", message=command)
+    self.send_message(header="DECIDE", content=command)
     
     
 
