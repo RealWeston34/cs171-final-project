@@ -58,7 +58,7 @@ class ProcessServer:
       logging.info(f"ProcessServer connected to NetworkServer at {self.target_host}:{self.target_port}")
 
       # Start a thread to listen for incoming messages
-      listener_thread = threading.Thread(target=self.listen, daemon=True)
+      listener_thread = threading.Thread(target=self.listen)
       listener_thread.start()
 
     except Exception as e:
@@ -84,6 +84,7 @@ class ProcessServer:
             logging.info(f"ProcessServer received message: {header} from {src}")
             op_num = message["ballot_number"][0]
             content = message["message"]
+            logging.debug("Starting response thread for ACCEPT")
             response_thread = threading.Thread(target=self.send_response, args=("ACCEPTED", src, op_num, content), daemon=True)
             response_thread.start()
           elif header == "ACCEPTED":
@@ -141,30 +142,30 @@ class ProcessServer:
   
   def send_message(self, header, content):
     for node in range(self.num_nodes):
-        if node == self.id:
-          continue
-        
-        message = {
-          "header" : header,
-          "message" : content,
-          "ballot_number" : (self.op, self.id, self.seq_num),
-          "dest" : node
-        }
-        
-        # Maybe consider having a send lock if this becomes a problem
-        # Serialize the message to JSON and encode it to bytes
-        message_bytes = json.dumps(message).encode('utf-8')
+      if node == self.id:
+        continue
+      
+      message = {
+        "header" : header,
+        "message" : content,
+        "ballot_number" : (self.op, self.id, self.seq_num),
+        "dest" : node
+      }
+      
+      # Maybe consider having a send lock if this becomes a problem
+      # Serialize the message to JSON and encode it to bytes
+      message_bytes = json.dumps(message).encode('utf-8')
 
-        # Calculate the length of the message
-        message_length = len(message_bytes)
+      # Calculate the length of the message
+      message_length = len(message_bytes)
 
-        # Pack the length into 4 bytes using big-endian format
-        length_prefix = struct.pack('>I', message_length)
+      # Pack the length into 4 bytes using big-endian format
+      length_prefix = struct.pack('>I', message_length)
 
-        # Send the length prefix followed by the message bytes
-        with self.send_lock:
-          self.socket.sendall(length_prefix + message_bytes)
-    
+      # Send the length prefix followed by the message bytes
+      with self.send_lock:
+        self.socket.sendall(length_prefix + message_bytes)
+  
   def reach_consensus(self, command):
     # Send PROPOSE message if not leader:
     # if self.leader != self.id:
@@ -180,6 +181,7 @@ class ProcessServer:
       self.accepted_num = 0
   
     # Send DECIDE message:
+    self.decide(message=command, src=-1, is_leader=True)
     self.send_message(header="DECIDE", content=command)
     
     
@@ -197,6 +199,7 @@ class ProcessServer:
   # For ACCEPT message
   def send_response(self, header, dest, op_num, content):
     if self.op > op_num:
+      logging.debug("I DONT ACCEPT!!!!!!!!!!!!")
       return
     
     message = {
@@ -205,9 +208,21 @@ class ProcessServer:
       "ballot_number" : (self.op, self.id, self.seq_num),
       "dest" : dest
     }
+  
+    # Serialize the message to JSON and encode it to bytes
+    message_bytes = json.dumps(message).encode('utf-8')
+
+    # Calculate the length of the message
+    message_length = len(message_bytes)
+
+    # Pack the length into 4 bytes using big-endian format
+    length_prefix = struct.pack('>I', message_length)
+
+    
     
     # Maybe consider having a send lock if this becomes a problem
-    self.socket.sendall(json.dumps(message).encode('utf-8'))
+    with self.send_lock:
+      self.socket.sendall(length_prefix + message_bytes)
   
   def decide(self, message, src):
     """Handle consensus decisions and coordinate responses."""
@@ -322,10 +337,13 @@ class ProcessServer:
           self.reach_consensus(message)
         elif command == "view" and len(tokens) == 2 and tokens[1].isdigit():
           # TODO: start view thread and create view function
-          pass
+          context_id = tokens[1]
+          context_string = self.service.get_context(context_id)
+          print(context_string)
         elif command == "viewall":
           # TODO: start viewall thread and create viewall function
-          pass
+          all_context_strings = self.service.get_all_contexts()
+          print(all_context_strings)
           # start view all thread
         elif command == "exit":
           logging.info("ProcessServer exiting upon user request.")
