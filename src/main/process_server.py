@@ -228,6 +228,7 @@ class ProcessServer:
   def decide(self, message, src, is_leader=False):
     """Handle consensus decisions and coordinate responses."""
     tokens = message.strip().split()
+    logging.debug(f"Tokens: {tokens}")
     if not tokens:
       return
         
@@ -241,9 +242,9 @@ class ProcessServer:
       if success:
         print(f"NEW CONTEXT {context_id}")
             
-    elif command == "query" and len(tokens) == 3 and tokens[1].isdigit():
+    elif command == "query" and len(tokens) >= 3 and tokens[1].isdigit():
       context_id = tokens[1]
-      query_string = tokens[2]
+      query_string = ' '.join(tokens[2:])
       
       # Add query to local context
       if self.service.add_query_to_context(context_id, query_string):
@@ -253,14 +254,11 @@ class ProcessServer:
         logging.error("Failed to decide on QUERY function")
     
                 
-    elif command == "choose" and len(tokens) == 3 and tokens[1].isdigit() and tokens[2].isdigit():
+    elif command == "choose" and len(tokens) >= 3 and tokens[1].isdigit():
       context_id = tokens[1]
-      server_id = int(tokens[2])
-      if server_id in self.collected_responses.get(context_id, {}):
-        chosen_answer = self.collected_responses[context_id][server_id]
-        if self.service.save_answer(context_id, chosen_answer):
-          print(f"CHOSEN ANSWER on {context_id} with {chosen_answer}")
-          self.collected_responses.pop(context_id, None)    
+      chosen_answer = ' '.join(tokens[2:])
+      if self.service.save_answer(context_id, chosen_answer):
+        print(f"CHOSEN ANSWER on {context_id} with {chosen_answer}")
     else:
       response = "Could not decide!"
     
@@ -310,19 +308,23 @@ class ProcessServer:
           context_id = tokens[1]
           message = f"{command} {context_id}"
           self.reach_consensus(message)
-          
           # start create context thread
-        elif command == "query" and len(tokens) == 3 and tokens[1].isdigit():
+        elif command == "query" and len(tokens) >= 3 and tokens[1].isdigit():
           context_id = tokens[1]
-          query_string = tokens[2]
+          query_string = ' '.join(tokens[2:])
           message = f"{command} {context_id} {query_string}"
           self.reach_consensus(message)
           # start query thread
         elif command == "choose" and len(tokens) == 3 and tokens[1].isdigit() and tokens[2].isdigit():
           context_id = tokens[1]
-          response_number = tokens[2]
-          message = f"{command} {context_id} {response_number}"
-          self.reach_consensus(message)
+          server_id = int(tokens[2])
+          if server_id in self.collected_responses.get(context_id, {}):
+            chosen_answer = self.collected_responses[context_id][server_id]
+            message = f"{command} {context_id} {chosen_answer}"
+            self.collected_responses.pop(context_id, None)
+            self.reach_consensus(message) # should probably start in a new thread for all of them, so they don't get hung
+          else:
+            logging.error(f"Cannot find context history for {context_id}")
         elif command == "view" and len(tokens) == 2 and tokens[1].isdigit():
           context_id = tokens[1]
           context = self.service.get_context(context_id)
