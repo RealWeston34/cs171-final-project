@@ -71,102 +71,104 @@ class ProcessServer:
 
     except Exception as e:
       logging.exception(f"ProcessServer failed to connect to {self.target_host}:{self.target_port}: {e}")
-
+      
+  def recvall(self, sock, n):
+    """Helper function to read exactly n bytes."""
+    data = bytearray()
+    while len(data) < n:
+        packet = sock.recv(n - len(data))
+        if not packet:
+            return None  # Connection closed or error
+        data.extend(packet)
+    return bytes(data)
+  
+  # might want to split this function up into one that receives the message and one that processes the message in a new thread?
   def listen(self):
     """
     Listen for incoming messages from the NetworkServer.
     """
     try:
       while self.is_running:
-        data = self.socket.recv(1024)
-        if data:
-          message = json.loads(data.decode('utf-8'))
-          header = message["header"]
-          src = message["ballot_number"][1]
-          logging.debug(f"ProcessServer received message: {message}")
-          if header == "KILL":
-            logging.info("ProcessServer received KILL message. Shutting down.")
-            self.shutdown()
-            break
-          elif header == "ACCEPT":
-            logging.info(f"ProcessServer received message: {header} from {src}")
-            op_num = message["ballot_number"][0]
-            content = message["message"]
-            logging.debug("Starting response thread for ACCEPT")
-            response_thread = threading.Thread(target=self.send_response, args=("ACCEPTED", src, op_num, content), daemon=True)
-            response_thread.start()
-          elif header == "ACCEPTED":
-            logging.info(f"ProcessServer received message: {header} from {src}")
-            # maybe start in a new thread?
-            with self.accepted_condition:
-              self.accepted_num += 1
-              self.accepted_condition.notify_all()
-          elif header == "PROPOSE":
-            op_num = message["ballot_number"][0]
-            content = message["message"]
-            logging.debug("Starting response thread for PROPOSE")
-            propose_response_thread = threading.Thread(target=self.send_response, args=("PROMISE", src, op_num, content,), daemon=True)
-            propose_response_thread.start()
-          elif header == "PROMISE":
-            with self.proposal_condition:
-              self.promised_num += 1
-              self.proposal_condition.notify_all()
-          elif header == "FORWARD":
-            content = message["message"]
-            forward_thread = threading.Thread(target=self.send_response, args=("ACK", src, float("inf"), content,), daemon=True)
-            forward_thread.start()
-            self.pending_operations.append(content)
-            self.operation_event.set()
-          elif header == "ACK":
-            content = message["message"]
-            self.leader_ack_event.set()
-            print(f"Received ACK from {src} for command {content}")
-            
-          elif header == "DECIDE":
-            # create new decide function
-            logging.info(f"ProcessServer received message: {header} from {src}")
-            msg = message["message"]
-            decide_thread = threading.Thread(target=self.decide, args=(msg, src,), daemon=True)
-            decide_thread.start()
-          elif header == "RESPONSE":
-            # Store response from other server
+        raw_length = self.recvall(self.socket, 4)
+        if not raw_length:
+          break  # Connection closed or error
+
+        # Unpack the length (big-endian unsigned integer)
+        message_length = struct.unpack('>I', raw_length)[0]
+
+        # Read the message data based on the length
+        message_bytes = self.recvall(self.socket, message_length)
+        if not message_bytes:
+          break  # Connection closed or error
+
+        # Decode and deserialize the JSON message
+        message = json.loads(message_bytes.decode('utf-8'))
+        header = message["header"]
+        src = message["ballot_number"][1]
+        logging.debug(f"ProcessServer received message: {message}")
+        if header == "KILL":
+          logging.info("ProcessServer received KILL message. Shutting down.")
+          self.shutdown()
+          break
+        elif header == "ACCEPT":
+          logging.info(f"ProcessServer received message: {header} from {src}")
+          op_num = message["ballot_number"][0]
+          content = message["message"]
+          logging.debug("Starting response thread for ACCEPT")
+          response_thread = threading.Thread(target=self.send_response, args=("ACCEPTED", src, op_num, content), daemon=True)
+          response_thread.start()
+        elif header == "ACCEPTED":
+          logging.info(f"ProcessServer received message: {header} from {src}")
+          # maybe start in a new thread?
+          with self.accepted_condition:
+            self.accepted_num += 1
+            self.accepted_condition.notify_all()
+        elif header == "PROPOSE":
+          op_num = message["ballot_number"][0]
+          content = message["message"]
+          logging.debug("Starting response thread for PROPOSE")
+          propose_response_thread = threading.Thread(target=self.send_response, args=("PROMISE", src, op_num, content,), daemon=True)
+          propose_response_thread.start()
+        elif header == "PROMISE":
+          with self.proposal_condition:
+            self.promised_num += 1
+            self.proposal_condition.notify_all()
+        elif header == "FORWARD":
+          content = message["message"]
+          forward_thread = threading.Thread(target=self.send_response, args=("ACK", src, float("inf"), content,), daemon=True)
+          forward_thread.start()
+          self.pending_operations.append(content)
+          self.operation_event.set()
+        elif header == "ACK":
+          content = message["message"]
+          self.leader_ack_event.set()
+          print(f"Received ACK from {src} for command {content}")
+        elif header == "DECIDE":
+          # create new decide function
+          logging.info(f"ProcessServer received message: {header} from {src}")
+          msg = message["message"]
+          decide_thread = threading.Thread(target=self.decide, args=(msg, src,), daemon=True)
+          decide_thread.start()
+        elif header == "RESPONSE":
             context_id = message["context_id"]
             server_id = message["ballot_number"][1]
             response = message["message"]
             
-            # Initialize dict for context if needed
             if context_id not in self.collected_responses:
                 self.collected_responses[context_id] = {}
             
-            # Store response
             self.collected_responses[context_id][server_id] = response
             
-            # Print received response
             print(f"\nReceived from server {server_id} for context {context_id}:")
             print(f"Response: {response}\n")
-          else:
-            logging.warning(f"ProcessServer received unknown message: {message}")
         else:
-          break
+            logging.warning(f"ProcessServer received unknown message: {message}")
     except Exception as e:
       if self.is_running:
-        logging.exception(f"ProcessServer error while listening: {e}")
+          logging.exception(f"ProcessServer error while listening: {e}")
     finally:
       self.socket.close()
       logging.info("ProcessServer connection closed")
-  
-  # Assumptions in multipaxos:
-  # Each proccess only proposes one message as a time ?
-  # - Maybe add a system to prevent this 
-  # - I think it is added to a queue
-  # - synchronous loop
-  
-  # Sending messages
-  # Use as skeleton for other operations
-  # Eventually will want to have a thread that continuosly checks the queue for operations
-  # When the user inputs a command, then it will be added to this queue rather than handled by its own thread
-  # In the listen thread, it will also be added to the queue
-  # In the 'handle_operation' thead, it will bascially do operations using multi paxos.
   
   def handle_consensus(self):
     # leader is unknown, send proposal
@@ -192,13 +194,6 @@ class ProcessServer:
         self.pending_operations.popleft()
         logging.debug(f"Done reaching consensus, pending operations: {self.pending_operations}")
       self.pending_operations.clear()
-  
-  # def execute_commands(self):
-  #   while self.pending_operations:
-  #     operation = self.pending_operations[0]
-  #     self.reach_consensus(operation)
-  #     self.pending_operations.popleft()
-  #   self.operation_event.clear()
       
   def send_message(self, header, content, context_id=-1):
     for node in range(self.num_nodes):
@@ -238,19 +233,7 @@ class ProcessServer:
     self.leader = self.id # set itself as the new leader
     
   
-  def reach_consensus(self, command):
-    # Send PROPOSE message if not leader:
-    # if self.leader != self.id:
-    #   self.send_message(header="PROPOSE", message=msg)
-    #   self.accepted_condition.wait_for(lambda: self.accepted_num >= self.majority)
-    #   self.accepted_num = 0
-    #   self.leader = self.id
-    
-    # Leader Election
-    # - Does not know who the leader is
-    # - Knows who the leader is, but times out in trying to send the message
-    
-      
+  def reach_consensus(self, command):      
     # Send ACCEPT message:
     self.send_message(header="ACCEPT", content=command)
     with self.accepted_condition:
@@ -260,18 +243,6 @@ class ProcessServer:
     # Send DECIDE message:
     self.decide(message=command, src=-1, is_leader=True)
     self.send_message(header="DECIDE", content=command)
-    
-    
-
-    # initialize context_id to an empty string
-    # Send to other servers through multi paxos
-    # - If not leader, send proposal
-    # - If leader, assume replication phase and send accept messages
-    # - The network server will forward the message to all other servers
-    # - The network server will forward the response to the server
-    # - process server will have a local variable for number of response
-    # - Use a lock to update the value of this variable
-    # - Once local variable is a majority, then decide 
     
   def send_response(self, header, dest, op_num, content, context_id=-1):
     if self.op > op_num:
@@ -356,20 +327,6 @@ class ProcessServer:
       except Exception as e:
         logging.exception(f"ProcessServer error while closing socket: {e}")
     logging.info("ProcessServer shutdown complete")
-
-#   7.1 Expected Server Input
-# Each node should support the following operations.
-# • create <context ID>: create a new context with a context ID.
-# • query <context ID> <query string>: query the LLM on a context ID with a query
-# string>.
-# 6
-# • choose <context ID> <response number>: select an LLM response based equal to the
-# server ID that responded on a context ID.
-# • view <context ID>: prints a context of a thread of discussion with LLM.
-# • viewall: prints all contexts of discussion with the LLM.
-#
-# Logic: handle each command in its own thread
-# Structure it according to the multi-paxos protocol
 
   def user_input_handler(self):
     """
