@@ -62,68 +62,87 @@ class ProcessServer:
 
     except Exception as e:
       logging.exception(f"ProcessServer failed to connect to {self.target_host}:{self.target_port}: {e}")
-
+      
   def listen(self):
     """
     Listen for incoming messages from the NetworkServer.
     """
     try:
-      while self.is_running:
-        data = self.socket.recv(1024)
-        if data:
-          message = json.loads(data.decode('utf-8'))
-          header = message["header"]
-          src = message["ballot_number"][1]
-          logging.debug(f"ProcessServer received message: {message}")
-          if header == "KILL":
-            logging.info("ProcessServer received KILL message. Shutting down.")
-            self.shutdown()
-            break
-          elif header == "ACCEPT":
-            logging.info(f"ProcessServer received message: {header} from {src}")
-            op_num = message["ballot_number"][0]
-            content = message["message"]
-            logging.debug("Starting response thread for ACCEPT")
-            response_thread = threading.Thread(target=self.send_response, args=("ACCEPTED", src, op_num, content), daemon=True)
-            response_thread.start()
-          elif header == "ACCEPTED":
-            logging.info(f"ProcessServer received message: {header} from {src}")
-            # maybe start in a new thread?
-            with self.accepted_condition:
-              self.accepted_num += 1
-              self.accepted_condition.notify_all()
-          elif header == "DECIDE":
-            # create new decide function
-            logging.info(f"ProcessServer received message: {header} from {src}")
-            msg = message["message"]
-            decide_thread = threading.Thread(target=self.decide, args=(msg, src,), daemon=True)
-            decide_thread.start()
-          elif header == "RESPONSE":
-            # Store response from other server
-            context_id = message["context_id"]
-            server_id = message["ballot_number"][1]
-            response = message["message"]
+        while self.is_running:
+            # Read exactly 4 bytes for the length prefix
+            raw_length = self.recvall(self.socket, 4)
+            if not raw_length:
+                break  # Connection closed or error
+
+            # Unpack the length (big-endian unsigned integer)
+            message_length = struct.unpack('>I', raw_length)[0]
+
+            # Read the message data based on the length
+            message_bytes = self.recvall(self.socket, message_length)
+            if not message_bytes:
+                break  # Connection closed or error
+
+            # Decode and deserialize the JSON message
+            message = json.loads(message_bytes.decode('utf-8'))
+            header = message["header"]
+            src = message["ballot_number"][1]
+            logging.debug(f"ProcessServer received message: {message}")
             
-            # Initialize dict for context if needed
-            if context_id not in self.collected_responses:
-                self.collected_responses[context_id] = {}
-            
-            # Store response
-            self.collected_responses[context_id][server_id] = response
-            
-            # Print received response
-            print(f"\nReceived from server {server_id} for context {context_id}:")
-            print(f"Response: {response}\n")
-          else:
-            logging.warning(f"ProcessServer received unknown message: {message}")
-        else:
-          break
+            if header == "KILL":
+                logging.info("ProcessServer received KILL message. Shutting down.")
+                self.shutdown()
+                break
+            elif header == "ACCEPT":
+                logging.info(f"ProcessServer received message: {header} from {src}")
+                op_num = message["ballot_number"][0]
+                content = message["message"]
+                logging.debug("Starting response thread for ACCEPT")
+                response_thread = threading.Thread(target=self.send_response, 
+                                                args=("ACCEPTED", src, op_num, content), 
+                                                daemon=True)
+                response_thread.start()
+            elif header == "ACCEPTED":
+                logging.info(f"ProcessServer received message: {header} from {src}")
+                with self.accepted_condition:
+                    self.accepted_num += 1
+                    self.accepted_condition.notify_all()
+            elif header == "DECIDE":
+                logging.info(f"ProcessServer received message: {header} from {src}")
+                msg = message["message"]
+                decide_thread = threading.Thread(target=self.decide, 
+                                              args=(msg, src,), 
+                                              daemon=True)
+                decide_thread.start()
+            elif header == "RESPONSE":
+                context_id = message["context_id"]
+                server_id = message["ballot_number"][1]
+                response = message["message"]
+                
+                if context_id not in self.collected_responses:
+                    self.collected_responses[context_id] = {}
+                
+                self.collected_responses[context_id][server_id] = response
+                
+                print(f"\nReceived from server {server_id} for context {context_id}:")
+                print(f"Response: {response}\n")
+            else:
+                logging.warning(f"ProcessServer received unknown message: {message}")
     except Exception as e:
-      if self.is_running:
-        logging.exception(f"ProcessServer error while listening: {e}")
+        if self.is_running:
+            logging.exception(f"ProcessServer error while listening: {e}")
     finally:
-      self.socket.close()
-      logging.info("ProcessServer connection closed")
+        self.socket.close()
+        logging.info("ProcessServer connection closed")
+
+  def recvall(self, sock, n):
+    """Helper function to read exactly n bytes."""
+    data = bytearray()
+    while len(data) < n:
+        packet = sock.recv(n - len(data))
+        if not packet:
+            return None  # Connection closed or error
+        data.extend(packet)
+    return bytes(data)
   
   # Assumptions in multipaxos:
   # Each proccess only proposes one message as a time ?
