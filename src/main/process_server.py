@@ -1,6 +1,5 @@
 import socket
 import threading
-import time
 import logging
 import collections
 import json
@@ -28,7 +27,7 @@ class ProcessServer:
     self.seq_num = id # to ensure uniqueness, can only add a multiple of self.num_nodes to it
     self.leader = -1 # keep track of the current leader in multi paxos
     self.num_nodes = 3 # maybe pass as an arg ?
-    self.majority = (self.num_nodes // 2) + 1
+    self.majority = (self.num_nodes // 2) # includes self
     self.collected_responses = {}  # context_id -> {server_id -> response}
     
     self.promised_num = 0
