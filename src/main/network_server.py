@@ -132,28 +132,35 @@ class NetworkServer:
   # demo function, logic needs to be updated to handle multi-paxos protocol
   def forward_message(self, p_socket, json_message):
     try:
-      logging.debug(f"Forwarding message: {json_message}")
-      src_id = json_message["ballot_number"][1]
-      dest_id = json_message["dest"]
-      
-      if dest_id not in self.connections:
-        logging.error(f"Could not connect to server: {dest_id}")
-        return 
+        logging.debug(f"Forwarding message: {json_message}")
+        src_id = json_message["ballot_number"][1]
+        dest_id = json_message["dest"]
+        
+        if dest_id not in self.connections:
+            logging.error(f"Could not connect to server: {dest_id}")
+            return 
 
-      dest_sock = self.connections[dest_id]
+        dest_sock = self.connections[dest_id]
 
-      if self.connection_map[src_id][dest_id]:
-        time.sleep(3)
-        dest_msg = json.dumps(json_message)
-        dest_sock.sendall(dest_msg.encode('utf-8'))
-        logging.info(f"Sent message: {json_message['header']} from server {src_id} to server {dest_id}")
-      else:
-        logging.error(f"Failed to send message from {src_id} to {dest_id}")
-          
+        if self.connection_map[src_id][dest_id]:
+            time.sleep(3)
+            # Convert message to JSON string and encode to bytes
+            dest_msg = json.dumps(json_message).encode('utf-8')
+            
+            # Calculate message length and create length prefix
+            message_length = len(dest_msg)
+            length_prefix = struct.pack('>I', message_length)
+            
+            # Send length prefix followed by message
+            dest_sock.sendall(length_prefix + dest_msg)
+            logging.info(f"Sent message: {json_message['header']} from server {src_id} to server {dest_id}")
+        else:
+            logging.error(f"Failed to send message from {src_id} to {dest_id}")
+              
     except json.JSONDecodeError:
-      logging.error("Invalid JSON message received")
+        logging.error("Invalid JSON message received")
     except Exception as e:
-      logging.exception(f"Error sending reply: {e}")
+        logging.exception(f"Error sending reply: {e}")
 
   def connect_to_node(self, server_id, port):
     try:
