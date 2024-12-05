@@ -131,7 +131,7 @@ class NetworkServer:
         
         # Send length prefix followed by message
         dest_sock.sendall(length_prefix + dest_msg)
-        logging.info(f"Sent message: {json_message['header']} from server {src_id if src_id != -1 else "'Network Server'"} to server {dest_id}")
+        logging.info(f"Sent message: {json_message['header']} from server {src_id if src_id != -1 else 'Network Server'} to server {dest_id}")
       else:
           logging.error(f"Failed to send message from {src_id} to {dest_id}")
               
