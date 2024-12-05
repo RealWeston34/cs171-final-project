@@ -11,18 +11,12 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# High level overview:
-# Need to establish a connection to each server
-# Need to start threads for all messages coming from the server
-# When the message is received and decoded, send reply back to the server, have a 3 second delay before sending to simulate network conditions
-# Simulate connections failing using a dictionary: connection_map
-# By default, when a server is connected, connection_map[server] will be set to 1
-# When starting the server, have a main thread that handles all user facing inputs:
-# - failLink <src> <dest>, set connection_map[src][dest] = 0
-# - fixLink <src> <dest>, set connection_map[src][dest] = 1
-# - failNode <nodeNum>, need to send a message to nodeNum that result in a kill protocol, potentially reboot afterwards.
-# Use a Lock when dealing with connection_map so there are no mutex errors
-# Optional: Add error handling for when connections actually fail
+# TODO:
+# - Exit gracefully with exit command
+# - Get rid of port already in use error
+# - Test Leader Fail
+# - Test partition scenario
+# - Ask about seq_num
 
 class NetworkServer:
   def __init__(self, base_port, num_servers):
@@ -40,7 +34,7 @@ class NetworkServer:
       return -1
     
     port = addr[1]
-    return port - self.server_port - 1 
+    return port - self.server_port - 1
 
   # Ai GENERATED
   def recvall(self, sock, n):
@@ -85,23 +79,7 @@ class NetworkServer:
       except Exception as e:
         if self.is_running:
           logging.exception(f"Error accepting connections: {e}")
-  
-  # def handle_process(self, p_socket):
-  #   logging.debug("Handling the process in a new thread")
-  #   try:
-  #     while self.is_running:
-  #       data = p_socket.recv(1024)
-  #       if data:
-  #         message = data.decode("utf-8")
-  #         forward_thread = threading.Thread(target=self.forward_message, args=(p_socket, message,))
-  #         forward_thread.start()
-  #       else:
-  #         break
-  #   except Exception as e:
-  #     logging.exception(f"Error handling client: {e}")
-  #   finally:
-  #     p_socket.close()
-      
+
   def handle_process(self, p_socket):
     logging.debug("Handling the process in a new thread")
     try:
@@ -122,7 +100,7 @@ class NetworkServer:
         # Decode and deserialize the JSON message
         message_str = message_bytes.decode('utf-8')
         message = json.loads(message_str)
-        forward_thread = threading.Thread(target=self.forward_message, args=(p_socket, message,))
+        forward_thread = threading.Thread(target=self.forward_message, args=(message,))
         forward_thread.start()
     except Exception as e:
       logging.exception(f"Error handling client: {e}")
@@ -130,32 +108,32 @@ class NetworkServer:
       p_socket.close()
     
   # demo function, logic needs to be updated to handle multi-paxos protocol
-  def forward_message(self, p_socket, json_message):
+  def forward_message(self, json_message):
     try:
-        logging.debug(f"Forwarding message: {json_message}")
-        src_id = json_message["ballot_number"][1]
-        dest_id = json_message["dest"]
+      logging.debug(f"Forwarding message: {json_message}")
+      src_id = json_message["ballot_number"][1]
+      dest_id = json_message["dest"]
+      
+      if dest_id not in self.connections:
+        logging.error(f"Could not connect to server: {dest_id}")
+        return 
+
+      dest_sock = self.connections[dest_id]
+
+      if self.connection_map[src_id][dest_id]:
+        time.sleep(3)
+        # Convert message to JSON string and encode to bytes
+        dest_msg = json.dumps(json_message).encode('utf-8')
         
-        if dest_id not in self.connections:
-            logging.error(f"Could not connect to server: {dest_id}")
-            return 
-
-        dest_sock = self.connections[dest_id]
-
-        if self.connection_map[src_id][dest_id]:
-            time.sleep(3)
-            # Convert message to JSON string and encode to bytes
-            dest_msg = json.dumps(json_message).encode('utf-8')
-            
-            # Calculate message length and create length prefix
-            message_length = len(dest_msg)
-            length_prefix = struct.pack('>I', message_length)
-            
-            # Send length prefix followed by message
-            dest_sock.sendall(length_prefix + dest_msg)
-            logging.info(f"Sent message: {json_message['header']} from server {src_id} to server {dest_id}")
-        else:
-            logging.error(f"Failed to send message from {src_id} to {dest_id}")
+        # Calculate message length and create length prefix
+        message_length = len(dest_msg)
+        length_prefix = struct.pack('>I', message_length)
+        
+        # Send length prefix followed by message
+        dest_sock.sendall(length_prefix + dest_msg)
+        logging.info(f"Sent message: {json_message['header']} from server {src_id if src_id != -1 else "'Network Server'"} to server {dest_id}")
+      else:
+          logging.error(f"Failed to send message from {src_id} to {dest_id}")
               
     except json.JSONDecodeError:
         logging.error("Invalid JSON message received")
@@ -213,10 +191,16 @@ class NetworkServer:
       if nodeNum not in self.connections:
         logging.error(f"No connection to node {nodeNum}")
         return
-
+      
       try:
-        kill_message = "KILL"
-        self.connections[nodeNum].sendall(kill_message.encode())
+        kill_message = {
+        "header" : "KILL",
+        "message" : "",
+        "ballot_number" : (-1, -1, -1),
+        "dest" : nodeNum,
+        "context_id" : -1
+      }
+        self.forward_message(kill_message)
         logging.info(f"Sent KILL message to node {nodeNum}")
         self.connections[nodeNum].close()
         del self.connections[nodeNum]
@@ -234,6 +218,3 @@ if __name__ == "__main__":
 
   network_server = NetworkServer(base_port, target_port)
   network_server.start_server()
-
-
-
