@@ -6,6 +6,7 @@ import collections
 import json
 import os
 import struct
+import time
 from llm_service import LLMService
 from dotenv import load_dotenv
 
@@ -89,23 +90,23 @@ class ProcessServer:
       while self.is_running:
         raw_length = self.recvall(self.socket, 4)
         if not raw_length:
-          break  # Connection closed or error
-
-        # Unpack the length (big-endian unsigned integer)
+          break  
+        
         message_length = struct.unpack('>I', raw_length)[0]
 
-        # Read the message data based on the length
         message_bytes = self.recvall(self.socket, message_length)
         if not message_bytes:
-          break  # Connection closed or error
+          break
 
-        # Decode and deserialize the JSON message
         message = json.loads(message_bytes.decode('utf-8'))
         header = message["header"]
         ballot_number = message["ballot_number"]
         content = message["message"]
         src = message["src"]
-        
+
+        if "contexts" in message:
+          self.service.compare_and_update_dict(message["contexts"])
+
         if header == "KILL":
           logging.info("ProcessServer received KILL message. Shutting down.")
           self.shutdown()
@@ -255,7 +256,8 @@ class ProcessServer:
         "ballot_number" : ballot_number,
         "dest" : node,
         "src" : self.ballot["id"],
-        "context_id" : context_id
+        "context_id" : context_id,
+        "contexts": self.service.get_all_contexts()
       }
       
       # Maybe consider having a send lock if this becomes a problem
@@ -286,7 +288,8 @@ class ProcessServer:
       "ballot_number" : ballot_number,
       "dest" : dest,
       "src" : self.ballot["id"],
-      "context_id" : context_id
+      "context_id" : context_id,
+      "contexts": self.service.get_all_contexts()
     }
   
     # Serialize the message to JSON and encode it to bytes
@@ -307,105 +310,55 @@ class ProcessServer:
       self.promised_ballot = ballot_number
       logging.debug(f"LEADER is set to {dest}")
   
-def decide(self, message, src, ballot_number, is_leader=False):
-  """Handle consensus decisions and coordinate responses."""
-  tokens = message.strip().split()
-  logging.debug(f"Tokens: {tokens}")
-  if not tokens:
-    return
-      
-  command = tokens[0]
-  response = ""
-  context_id = -1
-  
-  if command == "create" and len(tokens) == 2 and tokens[1].isdigit():
-    context_id = tokens[1]
-    success = self.service.create_context(context_id)
-    if success:
-      print(f"NEW CONTEXT {context_id}")
-      self.ballot["op"] += 1
-          
-  elif command == "query" and len(tokens) >= 3 and tokens[1].isdigit():
-    context_id = tokens[1]
-    query_string = ' '.join(tokens[2:])
-    
-    # Add query to local context
-    if self.service.add_query_to_context(context_id, query_string):
-      print(f"NEW QUERY on {context_id} with {query_string}")
-      response += self.service.generate_response(context_id)
-      self.ballot["op"] += 1
-      if context_id not in self.collected_responses:
-          self.collected_responses[context_id] = {}
-      self.collected_responses[context_id][self.id] = response
-
-      print(f"\nReceived from server {self.id} for context {context_id}:")
-      print(f"Response: {response}\n")
-    else:
-      logging.error("Failed to decide on QUERY function")
-  elif command == "choose" and len(tokens) >= 3 and tokens[1].isdigit():
-    context_id = tokens[1]
-    chosen_answer = ' '.join(tokens[2:])
-    if self.service.save_answer(context_id, chosen_answer):
-      print(f"CHOSEN ANSWER on {context_id} with {chosen_answer}")
-      self.ballot["op"] += 1
-  else:
-    response = "Could not decide!"
-  
-  if not is_leader and response:
-    print(context_id)
-    print(ballot_number)
-    self.send_response(header="RESPONSE", dest=src, ballot_number=ballot_number, content=response, context_id=context_id)
-      
-  # def decide(self, message, src, is_leader=False):
-  #       """
-  #       Handle consensus decisions and coordinate responses.
-  #       """
-  #       tokens = message.strip().split()
-  #       logging.debug(f"Tokens: {tokens}")
-  #       if not tokens:
-  #           return
-            
-  #       command = tokens[0]
-  #       response = ""
-  #       context_id = -1
+  def decide(self, message, src, ballot_number, is_leader=False):
+    """Handle consensus decisions and coordinate responses."""
+    tokens = message.strip().split()
+    logging.debug(f"Tokens: {tokens}")
+    if not tokens:
+      return
         
-  #       if command == "create" and len(tokens) == 2 and tokens[1].isdigit():
-  #           context_id = tokens[1]
-  #           success = self.service.create_context(context_id)
-  #           if success:
-  #               print(f"NEW CONTEXT {context_id}")
-  #               self.ballot["op"] += 1
-                
-  #       elif command == "query" and len(tokens) >= 3 and tokens[1].isdigit():
-  #           context_id = tokens[1]
-  #           query_string = ' '.join(tokens[2:])
-
-  #           if self.service.add_query_to_context(context_id, query_string):
-  #               print(f"NEW QUERY on {context_id} with {query_string}")
-
-  #               response = self.service.generate_response(context_id)
-
-  #               if context_id not in self.collected_responses:
-  #                   self.collected_responses[context_id] = {}
-  #               self.collected_responses[context_id][self.id] = response
-
-  #               print(f"\nReceived from server {self.id} for context {context_id}:")
-  #               print(f"Response: {response}\n")
-  #           else:
-  #               logging.error("Failed to decide on QUERY function")
-                    
-  #       elif command == "choose" and len(tokens) >= 3 and tokens[1].isdigit():
-  #           context_id = tokens[1]
-  #           chosen_answer = ' '.join(tokens[2:])
-  #           if self.service.save_answer(context_id, chosen_answer):
-  #               print(f"CHOSEN ANSWER on {context_id} with {chosen_answer}")
-  #       else:
-  #           response = "Could not decide!"
-
-  #       if not is_leader and response:
-  #           self.send_response(header="RESPONSE", dest=src, op_num=float("inf"), content=response, context_id=context_id)
+    command = tokens[0]
+    response = ""
+    context_id = -1
+    
+    if command == "create" and len(tokens) == 2 and tokens[1].isdigit():
+      context_id = tokens[1]
+      success = self.service.create_context(context_id)
+      if success:
+        print(f"NEW CONTEXT {context_id}")
+        self.ballot["op"] += 1
+            
+    elif command == "query" and len(tokens) >= 3 and tokens[1].isdigit():
+      context_id = tokens[1]
+      query_string = ' '.join(tokens[2:])
       
+      # Add query to local context
+      if self.service.add_query_to_context(context_id, query_string):
+        print(f"NEW QUERY on {context_id} with {query_string}")
+        response += self.service.generate_response(context_id)
+        self.ballot["op"] += 1
+        if context_id not in self.collected_responses:
+            self.collected_responses[context_id] = {}
+        self.collected_responses[context_id][self.id] = response
 
+        print(f"\nReceived from server {self.id} for context {context_id}:")
+        print(f"Response: {response}\n")
+      else:
+        logging.error("Failed to decide on QUERY function")
+    elif command == "choose" and len(tokens) >= 3 and tokens[1].isdigit():
+      context_id = tokens[1]
+      chosen_answer = ' '.join(tokens[2:])
+      if self.service.save_answer(context_id, chosen_answer):
+        print(f"CHOSEN ANSWER on {context_id} with {chosen_answer}")
+        self.ballot["op"] += 1
+    else:
+      response = "Could not decide!"
+    
+    if not is_leader and response:
+      print(context_id)
+      print(ballot_number)
+      self.send_response(header="RESPONSE", dest=src, ballot_number=ballot_number, content=response, context_id=context_id)
+      
   def shutdown(self):
     """
     Shutdown the ProcessServer gracefully.
