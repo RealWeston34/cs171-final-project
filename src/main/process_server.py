@@ -5,6 +5,7 @@ import collections
 import json
 import os
 import struct
+import time
 from llm_service import LLMService
 
 logging.basicConfig(
@@ -90,20 +91,21 @@ class ProcessServer:
       while self.is_running:
         raw_length = self.recvall(self.socket, 4)
         if not raw_length:
-          break  # Connection closed or error
-
-        # Unpack the length (big-endian unsigned integer)
+          break  
+        
         message_length = struct.unpack('>I', raw_length)[0]
 
-        # Read the message data based on the length
         message_bytes = self.recvall(self.socket, message_length)
         if not message_bytes:
-          break  # Connection closed or error
+          break
 
-        # Decode and deserialize the JSON message
         message = json.loads(message_bytes.decode('utf-8'))
         header = message["header"]
         src = message["ballot_number"][1]
+
+        if "contexts" in message:
+                self.service.compare_and_update_dict(message["contexts"])
+
         logging.debug(f"ProcessServer received message: {message}")
         if header == "KILL":
           logging.info("ProcessServer received KILL message. Shutting down.")
@@ -204,7 +206,8 @@ class ProcessServer:
         "message" : content,
         "ballot_number" : (self.op, self.id, self.seq_num),
         "dest" : node,
-        "context_id" : context_id
+        "context_id" : context_id,
+        "contexts": self.service.get_all_contexts()
       }
       
       # Maybe consider having a send lock if this becomes a problem
@@ -240,8 +243,9 @@ class ProcessServer:
       self.accepted_num = 0
   
     # Send DECIDE message:
-    self.decide(message=command, src=-1, is_leader=True)
     self.send_message(header="DECIDE", content=command)
+    time.sleep(7)
+    self.decide(message=command, src=-1, is_leader=True)
     
   def send_response(self, header, dest, op_num, content, context_id=-1):
     if self.op > op_num:
@@ -253,7 +257,8 @@ class ProcessServer:
       "message" : content,
       "ballot_number" : (self.op, self.id, self.seq_num),
       "dest" : dest,
-      "context_id" : context_id
+      "context_id" : context_id,
+      "contexts": self.service.get_all_contexts()
     }
   
     # Serialize the message to JSON and encode it to bytes
@@ -293,22 +298,23 @@ class ProcessServer:
                 print(f"NEW CONTEXT {context_id}")
                 
         elif command == "query" and len(tokens) >= 3 and tokens[1].isdigit():
-            context_id = tokens[1]
-            query_string = ' '.join(tokens[2:])
+          context_id = tokens[1]
+          query_string = ' '.join(tokens[2:])
 
-            if self.service.add_query_to_context(context_id, query_string):
-                print(f"NEW QUERY on {context_id} with {query_string}")
+          if self.service.add_query_to_context(context_id, query_string):
+              print(f"NEW QUERY on {context_id} with {query_string}")
 
-                response = self.service.generate_response(context_id)
+              response = self.service.generate_response(context_id)
 
-                if context_id not in self.collected_responses:
-                    self.collected_responses[context_id] = {}
-                self.collected_responses[context_id][self.id] = response
+              if context_id not in self.collected_responses:
+                  self.collected_responses[context_id] = {}
+              self.collected_responses[context_id][self.id] = response
 
-                print(f"\nReceived from server {self.id} for context {context_id}:")
-                print(f"Response: {response}\n")
-            else:
-                logging.error("Failed to decide on QUERY function")
+              # Print local response to user
+              print(f"\nReceived from server {self.id} for context {context_id}:")
+              print(f"Response: {response}\n")
+          else:
+              logging.error("Failed to decide on QUERY function")
                     
         elif command == "choose" and len(tokens) >= 3 and tokens[1].isdigit():
             context_id = tokens[1]
