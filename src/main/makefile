@@ -16,11 +16,11 @@ network_server:
 # Run command:
 # make process_server ID=1
 server0:
-	python3 -u process_server.py 0 localhost $(PORT)
+	python3 -u process_server.py 0 localhost $(PORT) --log-level ERROR
 
 server1:
-	python3 -u process_server.py 1 localhost $(PORT)
+	python3 -u process_server.py 1 localhost $(PORT) --log-level ERROR
 
 server2:
-	python3 -u process_server.py 2 localhost $(PORT)
+	python3 -u process_server.py 2 localhost $(PORT) --log-level ERROR
 
