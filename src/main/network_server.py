@@ -12,11 +12,10 @@ logging.basicConfig(
 )
 
 # TODO:
-# - Exit gracefully with exit command
-# - Get rid of port already in use error
 # - Test Leader Fail
 # - Test partition scenario
 # - Ask about seq_num
+# - Json parsing function in utils file
 
 class NetworkServer:
   def __init__(self, base_port, num_servers):
@@ -50,6 +49,7 @@ class NetworkServer:
   def start_server(self):
     logging.info("Starting server...")
     self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     self.server_socket.bind(('localhost', self.server_port))
     self.server_socket.listen(5)
 
@@ -111,7 +111,7 @@ class NetworkServer:
   def forward_message(self, json_message):
     try:
       logging.debug(f"Forwarding message: {json_message}")
-      src_id = json_message["ballot_number"][1]
+      src_id = json_message["src"]
       dest_id = json_message["dest"]
       
       if dest_id not in self.connections:
@@ -120,7 +120,7 @@ class NetworkServer:
 
       dest_sock = self.connections[dest_id]
 
-      if self.connection_map[src_id][dest_id]:
+      if self.connection_map[src_id][dest_id] or src_id == -1:
         time.sleep(3)
         # Convert message to JSON string and encode to bytes
         dest_msg = json.dumps(json_message).encode('utf-8')
@@ -131,7 +131,7 @@ class NetworkServer:
         
         # Send length prefix followed by message
         dest_sock.sendall(length_prefix + dest_msg)
-        logging.info(f"Sent message: {json_message['header']} from server {src_id if src_id != -1 else 'Network Server'} to server {dest_id}")
+        logging.info(f"Sent message: {json_message['header']} from server {src_id if int(src_id) != -1 else 'Network Server'} to server {dest_id}")
       else:
           logging.error(f"Failed to send message from {src_id} to {dest_id}")
               
@@ -171,6 +171,8 @@ class NetworkServer:
           node_num = int(tokens[1])
           self.failNode(node_num)
           logging.info(f"Node {node_num} failed")
+        elif command == "exit" and len(tokens) == 1:
+          self.shutdown()
         else:
           logging.warning("Invalid command")
       except Exception as e:
@@ -198,7 +200,9 @@ class NetworkServer:
         "message" : "",
         "ballot_number" : (-1, -1, -1),
         "dest" : nodeNum,
-        "context_id" : -1
+        "src" : -1,
+        "context_id" : -1,
+        "contexts": {}
       }
         self.forward_message(kill_message)
         logging.info(f"Sent KILL message to node {nodeNum}")
@@ -206,6 +210,19 @@ class NetworkServer:
         del self.connections[nodeNum]
       except Exception as e:
         logging.exception(f"Error sending KILL message to node {nodeNum}: {e}")
+  
+  def shutdown(self):
+    """
+    Shutdown the ProcessServer gracefully.
+    """
+    self.is_running = False
+    if self.server_socket:
+      try:
+        self.server_socket.shutdown(socket.SHUT_RDWR)
+        self.server_socket.close()
+      except Exception as e:
+        logging.exception(f"NetworkServer error while closing socket: {e}")
+    logging.info("NetworkServer shutdown complete")
 
 # Example usage
 if __name__ == "__main__":
