@@ -6,7 +6,7 @@ import collections
 import json
 import os
 import struct
-import time
+import sys
 from llm_service import LLMService
 from dotenv import load_dotenv
 
@@ -103,12 +103,9 @@ class ProcessServer:
         ballot_number = message["ballot_number"]
         content = message["message"]
         src = message["src"]
-
-        if "contexts" in message:
-          self.service.compare_and_update_dict(message["contexts"])
-
+        src_dict = message["contexts"]
         if header == "KILL":
-          logging.info("ProcessServer received KILL message. Shutting down.")
+          print("ProcessServer received KILL message.")
           self.shutdown()
           break
         elif header == "ACCEPT":
@@ -133,6 +130,9 @@ class ProcessServer:
         elif header == "FORWARD":
           ballot_number = message["ballot_number"]
           content = message["message"]
+          if self.leader == -1:
+            print("Forfeiting leader status")
+            continue
           print(f"Received {header} <{ballot_number[0]} {ballot_number[1]} {ballot_number[2]}> {content} from Server {src}")
           forward_thread = threading.Thread(target=self.send_response, args=("ACK", src, ballot_number, content,), daemon=True)
           forward_thread.start()
@@ -146,7 +146,7 @@ class ProcessServer:
           # create new decide function
           print(f"Received {header} <{ballot_number[0]} {ballot_number[1]} {ballot_number[2]}> {content} from Server {src}")
           msg = message["message"]
-          decide_thread = threading.Thread(target=self.decide, args=(msg, src, ballot_number), daemon=True)
+          decide_thread = threading.Thread(target=self.decide, args=(msg, src, ballot_number, src_dict,), daemon=True)
           decide_thread.start()
         elif header == "RESPONSE":
             context_id = message["context_id"]
@@ -179,6 +179,7 @@ class ProcessServer:
         if self.leader == -1:
           received_promise_majority = self.leader_election(command, ballot_number)
           if not received_promise_majority: 
+            print("TIMEOUT waiting for majority promises")
             self.increment_ballot()
             self.pending_operations.popleft()
             continue
@@ -188,13 +189,13 @@ class ProcessServer:
           ack_received = self.leader_ack_event.wait(timeout=10.0)
           
           if not ack_received:
-            logging.error(f"Did not receive aknowledgement from {self.leader} after 10 seconds")
+            print(f"TIMEOUT waiting for ACK from server {self.leader}")
             print("Starting new leader election")
             received_promise_majority = self.leader_election(command, ballot_number)
             if not received_promise_majority:
+              print("TIMEOUT waiting for majority PROMISES")
               self.increment_ballot()
               self.pending_operations.popleft()
-              print("Failed to reach a majority of PROMISE messages")
               continue
           else:
             self.pending_operations.popleft()
@@ -223,7 +224,7 @@ class ProcessServer:
       received_accept_majority = self.accepted_condition.wait_for(lambda: self.accepted_num >= self.majority, timeout=10.0)
     
     if not received_accept_majority:
-      print("Failed to receive a majority of ACCEPTED messages")
+      print("TIMEOUT waiting for majority ACCEPTORS")
       return
       
     # Send DECIDE message:
@@ -278,7 +279,7 @@ class ProcessServer:
   def send_response(self, header, dest, ballot_number, content, context_id=-1, requires_ballot_comparison=False):
     # print(f"curr ballot: {self.max_ballot}, received ballot: {ballot_number}, comparison result {self.compare_ballot(ballot_number)}, flag: {requires_ballot_comparison}")
     if self.compare_ballot(ballot_number) and requires_ballot_comparison:
-      print(f"Did not PROMISE {header} <{ballot_number[0]}, {ballot_number[1]}, {ballot_number[2]}> {content} from Server {dest}")
+      print(f"Did not {header} <{ballot_number[0]}, {ballot_number[1]}, {ballot_number[2]}> {content} from Server {dest}")
       return
     
     print(f"Sending {header} <{ballot_number[0]}, {ballot_number[1]}, {ballot_number[2]}> {content} to Server {dest}")
@@ -310,7 +311,7 @@ class ProcessServer:
       self.promised_ballot = ballot_number
       logging.debug(f"LEADER is set to {dest}")
   
-  def decide(self, message, src, ballot_number, is_leader=False):
+  def decide(self, message, src, ballot_number, src_dict={}, is_leader=False):
     """Handle consensus decisions and coordinate responses."""
     tokens = message.strip().split()
     logging.debug(f"Tokens: {tokens}")
@@ -339,9 +340,9 @@ class ProcessServer:
         self.ballot["op"] += 1
         if context_id not in self.collected_responses:
             self.collected_responses[context_id] = {}
-        self.collected_responses[context_id][self.id] = response
+        self.collected_responses[context_id][self.ballot["id"]] = response
 
-        print(f"\nReceived from server {self.id} for context {context_id}:")
+        print(f"\nReceived from server {self.ballot["id"]} for context {context_id}:")
         print(f"Response: {response}\n")
       else:
         logging.error("Failed to decide on QUERY function")
@@ -354,9 +355,10 @@ class ProcessServer:
     else:
       response = "Could not decide!"
     
+    if not is_leader:
+       self.service.compare_and_update_dict(src_dict)
+       
     if not is_leader and response:
-      print(context_id)
-      print(ballot_number)
       self.send_response(header="RESPONSE", dest=src, ballot_number=ballot_number, content=response, context_id=context_id)
       
   def shutdown(self):
@@ -364,7 +366,14 @@ class ProcessServer:
     Shutdown the ProcessServer gracefully.
     """
     self.is_running = False
-    if self.socket:
+    print("Shutting Down...")
+    
+    try:
+      sys.stdout.flush()
+    except Exception as e:
+      logging.exception(f"Failed to flush stdout: {e}")
+        
+    if hasattr(self.socket, 'fileno') and self.socket.fileno() != -1:
       try:
         self.socket.shutdown(socket.SHUT_RDWR)
         self.socket.close()
