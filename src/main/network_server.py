@@ -120,7 +120,7 @@ class NetworkServer:
 
       dest_sock = self.connections[dest_id]
 
-      if self.connection_map[src_id][dest_id]:
+      if self.connection_map[src_id][dest_id] or src_id == -1:
         time.sleep(3)
         # Convert message to JSON string and encode to bytes
         dest_msg = json.dumps(json_message).encode('utf-8')
@@ -131,7 +131,7 @@ class NetworkServer:
         
         # Send length prefix followed by message
         dest_sock.sendall(length_prefix + dest_msg)
-        logging.info(f"Sent message: {json_message['header']} from server {src_id if src_id != -1 else "'Network Server'"} to server {dest_id}")
+        logging.info(f"Sent message: {json_message['header']} from server {src_id if int(src_id) != -1 else 'Network Server'} to server {dest_id}")
       else:
           logging.error(f"Failed to send message from {src_id} to {dest_id}")
               
@@ -201,7 +201,8 @@ class NetworkServer:
         "ballot_number" : (-1, -1, -1),
         "dest" : nodeNum,
         "src" : -1,
-        "context_id" : -1
+        "context_id" : -1,
+        "contexts": {}
       }
         self.forward_message(kill_message)
         logging.info(f"Sent KILL message to node {nodeNum}")

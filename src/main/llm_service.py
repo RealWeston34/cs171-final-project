@@ -56,3 +56,13 @@ class LLMService:
         """Retrieve all contexts."""
         with self.contexts_lock:
             return self.contexts.copy()
+        
+    def compare_and_update_dict(self, other_dict: Dict[str, str]) -> None:
+        """
+        Compare received dictionary with local one and update if behind.
+        """
+        with self.contexts_lock:
+            # Update any missing or outdated contexts
+            for context_id, content in other_dict.items():
+                if context_id not in self.contexts or len(self.contexts[context_id]) < len(content):
+                    self.contexts[context_id] = content
